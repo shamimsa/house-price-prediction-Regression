@@ -1,0 +1,337 @@
+---
+title: "House Price Prediction via Regression"
+author: "Shamim Samadi"
+output: 
+  html_document:
+    keep_md: true
+---
+```{r setup, include=FALSE,message=FALSE,error=FALSE,warning=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	error=FALSE,
+	message = FALSE,
+	warning = FALSE,
+	##cache = TRUE,
+	tidy = TRUE,
+	tidy.opts = list(width.cutoff = 70)
+)
+```
+
+# **Getting Started**
+This project aims at predicting the final price of residential homes in Ames, Iowa. Let's start out by importing required modules and reading data:
+
+```{r}
+#houses.train <- read.csv("../input/train.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+houses.train <- read.csv("/Users/Shamool/Documents/USC/DSO-530/Project/data_and_code/train.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+head(houses.train, n=10)
+```
+```{r}
+str(houses.train)
+```
+
+```{r}
+# houses.test <- read.csv("../input/test.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+houses.test <- read.csv("/Users/Shamool/Documents/USC/DSO-530/Project/data_and_code/test.csv", header = TRUE, sep = ",", , stringsAsFactors = FALSE)
+head(houses.test, n=10)
+```
+
+```{r}
+str(houses.test)
+```
+
+# **Data Preprocessing**
+
+```{r}
+# get the ID's to combine the two sets later
+train_ID = houses.train$Id
+test_ID = houses.test$Id
+```
+
+# ***Log Transformation***
+For variables representing financial data (e.g. price, income, etc), is it often a good idea to replace the original variable with its natural logarithm to help alleviate the violation of the normality assumption. 
+Taking a look at the histogram of the variable reveals the violation of the normality assumption:
+
+```{r}
+library(ggplot2)
+ggplot(data=houses.train,aes(x=SalePrice)) + geom_histogram()
+```
+Now let's take a look at the log variable:
+
+```{r}
+ggplot(data=houses.train,aes(x=log(SalePrice + 1))) + geom_histogram()
+```
+This looks much better! Let's replace the target variable with its natural log in our regression analysis:
+
+```{r}
+houses.train$SalePrice <- log(houses.train$SalePrice + 1)
+```
+
+# ***Handling Categorical Features: Factor Levels***
+It is important to make sure that the categorical variables are consistent across the train and test set in terms of the number of factor levels. Thus, we need to combine the two sets and convert characters to factors on the combined set:
+
+```{r}
+SalePrice = houses.train$SalePrice
+houses.train <- subset(houses.train, select = -c(SalePrice))
+
+#combined dataset
+houses.combined = rbind(houses.train, houses.test)
+# Drop the ID's since they act only as row identifiers and are not useful features for prediction
+houses.combined <- subset(houses.combined, select = -c(Id))
+
+# now convert string to factor using combined data
+houses.combined[sapply(houses.combined, is.character)] <- lapply(houses.combined[sapply(houses.combined, is.character)], as.factor)
+
+# Go back to the train and test sets
+houses.train = houses.combined[1:nrow(houses.train),]
+houses.train$SalePrice = SalePrice
+houses.test = houses.combined[(nrow(houses.train)+1):nrow(houses.combined),]
+str(houses.train)
+```
+
+```{r}
+str(houses.test)
+```
+
+# ***Handling Missing Values***
+Several columns in the data contain missing values:
+
+```{r}
+summary(houses.train)
+```
+
+```{r}
+NAcolumns.train <- names(which(sapply(houses.train, anyNA)))
+NAcolumns.train
+```
+
+```{r}
+summary(houses.test)
+```
+
+```{r}
+NAcolumns.test <- names(which(sapply(houses.test, anyNA)))
+NAcolumns.test
+```
+For the numeric variables, I have replaced the missing values with the mean of the existing values (computed over the training set) and for factor variables, I have used the most frequent factor level to fill in the missing entries:
+
+```{r}
+# train set
+head(houses.train, n=10)
+for (col in NAcolumns.train){
+  if (typeof(houses.train[,col]) == "numeric"){
+    houses.train[is.na(houses.train[,col]), col] <- mean(houses.train[,col], na.rm=True)
+  } else {
+    houses.train[is.na(houses.train[,col]), col] <- names(which.max(table(houses.train[,col])))   
+  }
+}
+
+head(houses.train, n=10)
+```
+
+```{r}
+# test set
+head(houses.test, n=10)
+for (col in NAcolumns.test){
+  if (typeof(houses.test[,col]) == "numeric"){
+    houses.test[is.na(houses.test[,col]), col] <- mean(houses.train[,col], na.rm=True)
+  } else {
+    houses.test[is.na(houses.test[,col]), col] <- names(which.max(table(houses.train[,col])))   
+  }
+}
+
+head(houses.test, n=10)
+```
+
+# ***Handling Categorical Features: One-hot Coding***
+One-hot coding is used to encode each factor level for every categorical feature into binary outputs. For this purpose, mltools was used:
+
+```{r}
+library(data.table)
+install.packages("mltools")
+library(mltools)
+houses.train <- one_hot(as.data.table(houses.train))
+head(houses.train, n=10)
+```
+```{r}
+houses.test <- one_hot(as.data.table(houses.test))
+head(houses.test, n=10)
+```
+# ***Feature Standardization***
+I have picked min-max scaling as the normalization method due to the presence of binary variables resulting from the one-hot-encoding process:
+
+```{r}
+# Preparing the data: feature-wise normalization
+SalePrice <- houses.train$SalePrice
+houses.train <- subset(houses.train, select = -c(SalePrice))
+
+#Mean.Train <- apply(houses.train, 2, mean)
+#Std.Train <- apply(houses.train, 2, sd)
+
+# LotFrontage is chr - convert to numeric before scaling
+houses.train$LotFrontage <- as.numeric(houses.train$LotFrontage)
+houses.test$LotFrontage <- as.numeric(houses.test$LotFrontage)
+
+mat.train <- data.matrix(houses.train)
+mat.test <- data.matrix(houses.test)
+
+# put the Label column back in the df
+houses.train$SalePrice = SalePrice
+
+# perform feature scaling on train and test set
+#mat.train <- scale(mat.train, center = Mean.Train, scale = Std.Train)
+#mat.test <- scale(mat.test, center = Mean.Train, scale = Std.Train)
+library(caret)
+pp = preProcess(mat.train, method = "range")
+x.train <- predict(pp, mat.train)
+x.test <- predict(pp, mat.test)
+```
+
+```{r}
+data.training <- as.data.frame(matrix(unlist(x.train), nrow = dim(x.train)[1]))
+data.training$SalePrice = SalePrice
+data.test <- as.data.frame(matrix(unlist(x.test), nrow = dim(x.test)[1]))
+```
+
+# **Building Regression Model**
+Time to train a model to predict the price of the houses in the test set:
+
+```{r}
+dim(x.train)
+```
+
+```{r}
+dim(x.test)
+```
+```{r}
+y.train <- as.matrix(SalePrice)
+dim(y.train)
+```
+
+# ***Model 1: Lasso**
+
+```{r}
+library(glmnet)
+#set.seed(1)
+#grid = 10^seq(10, -2, length = 100)
+# Lasso
+set.seed(1)
+cv.out.lasso = cv.glmnet(x.train, y.train, alpha = 1) # Fit lasso model on training data
+plot(cv.out.lasso) # Draw plot of training MSE as a function of lambda
+```
+
+```{r}
+bestlam = cv.out.lasso$lambda.min # Select lamda that minimizes training MSE
+bestlam
+```
+
+```{r}
+# Cross-validation RMSE error
+sqrt(cv.out.lasso$cvm[cv.out.lasso$lambda == bestlam])
+```
+
+```{r}
+best_lasso = glmnet(x.train, y.train, alpha = 1, lambda = bestlam)
+lasso_pred_log = predict(best_lasso, newx = x.test) # Use best lambda to predict on test data
+lasso_pred <- exp(lasso_pred_log) - 1
+df.out <- data.frame(Id=test_ID, SalePrice=lasso_pred)
+```
+
+# ***Model 2: Ridge Regression**
+
+```{r}
+library(glmnet)
+#set.seed(1)
+#grid = 10^seq(10, -2, length = 100)
+# Ridge
+set.seed(1)
+cv.out.ridge = cv.glmnet(x.train, y.train, alpha = 0) # Fit lasso model on training data
+plot(cv.out.ridge) # Draw plot of training MSE as a function of lambda
+```
+
+```{r}
+bestlam = cv.out.ridge$lambda.min # Select lamda that minimizes training MSE
+bestlam
+```
+
+```{r}
+# Cross-validation RMSE error
+sqrt(cv.out.ridge$cvm[cv.out.ridge$lambda == bestlam])
+```
+
+```{r}
+best_ridge = glmnet(x.train, y.train, alpha = 0, lambda = bestlam)
+ridge_pred_log = predict(best_ridge, newx = x.test) # Use best lambda to predict on test data
+ridge_pred <- exp(ridge_pred_log) - 1
+df.out <- data.frame(Id=test_ID, SalePrice=ridge_pred)
+```
+
+# *** Model 3: Gradient Boosting***
+## GBM
+
+```{r}
+#install.packages('parallel')
+library(parallel)
+library(caret)
+#install.packages('gbm')
+library(gbm)
+#install.packages('hydroGOF')
+library(hydroGOF)
+#install.packages('Metrics')
+library(Metrics)
+
+metric <- "RMSE"
+trainControl <- trainControl(method="repeatedcv",
+                             number=5,
+                             repeats=5,
+                             verboseIter=FALSE,
+                             allowParallel=TRUE)
+
+set.seed(1)
+# GBM model
+gbmGrid <-  expand.grid(interaction.depth = c(2, 4, 6, 9, 10),
+                    n.trees = (1:50)*10, 
+                    shrinkage = c(0.005, 0.05, 0.005),
+                    n.minobsinnode = 10)
+gbm.mod <- train(SalePrice~., data=data.training, method="gbm", trControl=trainControl, tuneGrid=gbmGrid, metric=metric, maximize=FALSE, verbose=FALSE)
+
+print(gbm.mod)
+```
+
+```{r}
+# cross validation RMSE for GBM model
+gbmRMSE <- min(gbm.mod$results$RMSE)
+gbmRMSE
+```
+
+```{r}
+gbm.mod$bestTune
+```
+
+```{r}
+bestntree <- gbm.mod$bestTune["n.trees"]
+as.numeric(bestntree)
+```
+```{r}
+bestdepth <- gbm.mod$bestTune["interaction.depth"]
+as.numeric(bestdepth)
+```
+
+```{r}
+## Predictions
+gbm_pred_log <- predict(gbm.mod, newdata = data.test) # make prediction on test data
+gbm_pred <- exp(gbm_pred_log) - 1
+df.out <- data.frame(Id=test_ID, SalePrice=gbm_pred)
+```
+
+# ***Model 4: Random Forest ***
+
+```{r}
+install.packages('randomForest')
+library(randomForest)
+set.seed(1)
+# RF model
+rfGrid <- expand.grid(mtry=c(100))
+rf.mod <- train(SalePrice~., data=data.training, method="rf", trControl=trainControl, tuneGrid=rfGrid, metric=metric, maximize=FALSE, verbose=FALSE)
+
+print(rf.mod)
+```
